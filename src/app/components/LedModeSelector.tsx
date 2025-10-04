@@ -18,7 +18,7 @@ export function LedModeSelector({
   return (
     <div className="section">
       <h3>Modos de LED</h3>
-      <div className="mode-buttons">
+      <div className="mode-buttons flex flex-row gap-3">
         <button
           className={"mode-btn " + (currentMode === "static" ? "active" : "")}
           onClick={() => onModeChange("static")}
@@ -45,16 +45,16 @@ export function LedModeSelector({
         <div className="slider-group">
           <label>
             ⏱️ Duração da Transição: {duration} (
-            {((duration / 255) * 100).toFixed(0)}%)
+            {((duration / 1000) * 100).toFixed(0)}%)
           </label>
           <input
             type="range"
-            min="1"
-            max="255"
+            min="255"
+            max="1000"
             value={duration}
             onChange={(e) => onDurationChange(Number(e.target.value))}
           />
-          <p className="info-text">Mais rápido (1) ← → Mais lento (255)</p>
+          <p className="info-text">Mais rápido (255) ← → Mais lento (1000)</p>
         </div>
       )}
 
