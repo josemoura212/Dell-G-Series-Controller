@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["dell-core", "src-tauri", "test_fans", "test_manual"]
+members = ["dell-core", "src-tauri"]
 
 [workspace.package]
 version = "1.0.0"
