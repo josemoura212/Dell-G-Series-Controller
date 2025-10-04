@@ -1,3 +1,6 @@
+import { useEffect } from "react";
+import { usePersistedSettings } from "../hooks/usePersistedSettings";
+
 interface FanControlProps {
   fan1: number;
   fan2: number;
@@ -15,6 +18,17 @@ export function FanControl({
   onApply,
   fanControlLimited = false,
 }: FanControlProps) {
+  const { updateSetting } = usePersistedSettings();
+
+  // Save fan speed changes to persistent storage
+  useEffect(() => {
+    updateSetting("cpuFan", fan1);
+  }, [fan1, updateSetting]);
+
+  useEffect(() => {
+    updateSetting("gpuFan", fan2);
+  }, [fan2, updateSetting]);
+
   return (
     <div className="section">
       <h3>Controle Manual</h3>

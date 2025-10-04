@@ -321,6 +321,41 @@ fn set_fan_boost(state: State<AppState>, params: FanBoostParams) -> Result<Strin
 }
 
 #[tauri::command]
+fn set_turbo_mode(state: State<AppState>) -> Result<String, String> {
+    let mut acpi = state.acpi.lock().unwrap();
+    if let Some(acpi_controller) = acpi.as_mut() {
+        // Set fans to maximum (100%)
+        let mut success_count = 0;
+        let mut errors = Vec::new();
+
+        // Set both fans to 100% (0xFF)
+        match acpi_controller.set_fan_boost(1, 0xFF) {
+            Ok(_) => success_count += 1,
+            Err(e) => errors.push(format!("CPU fan: {}", e)),
+        }
+
+        match acpi_controller.set_fan_boost(2, 0xFF) {
+            Ok(_) => success_count += 1,
+            Err(e) => errors.push(format!("GPU fan: {}", e)),
+        }
+
+        if success_count > 0 {
+            Ok(format!(
+                "🚀 MODO TURBO ATIVADO - Ventiladores em 100% ({}/2 sucesso)",
+                success_count
+            ))
+        } else {
+            Err(format!(
+                "❌ Modo turbo não disponível: {}",
+                errors.join(", ")
+            ))
+        }
+    } else {
+        Err("ACPI not available".to_string())
+    }
+}
+
+#[tauri::command]
 fn get_sensors(state: State<AppState>) -> Result<SensorData, String> {
     let mut acpi = state.acpi.lock().unwrap();
     if let Some(acpi_controller) = acpi.as_mut() {
@@ -358,6 +393,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--minimized"]),
@@ -375,9 +411,36 @@ pub fn run() {
             set_dim,
             set_power_mode,
             set_fan_boost,
+            set_turbo_mode,
             get_sensors,
         ])
         .setup(|app| {
+            // Register global shortcut for turbo mode
+            #[cfg(desktop)]
+            {
+                use tauri_plugin_global_shortcut::{Code, Modifiers, ShortcutState};
+
+                app.handle().plugin(
+                    tauri_plugin_global_shortcut::Builder::new()
+                        .with_shortcuts(["f12"])?
+                        .with_handler(|app, shortcut, event| {
+                            if event.state == ShortcutState::Pressed {
+                                if shortcut.matches(Modifiers::empty(), Code::F12) {
+                                    let app_handle = app.clone();
+                                    tauri::async_runtime::spawn(async move {
+                                        // Call the turbo mode command directly
+                                        let state = app_handle.state::<AppState>();
+                                        if let Err(e) = set_turbo_mode(state) {
+                                            eprintln!("Failed to set turbo mode: {:?}", e);
+                                        }
+                                    });
+                                }
+                            }
+                        })
+                        .build(),
+                )?;
+            }
+
             // Create system tray
             let show = MenuItemBuilder::with_id("show", "Mostrar").build(app)?;
             let quit = MenuItemBuilder::with_id("quit", "Sair").build(app)?;

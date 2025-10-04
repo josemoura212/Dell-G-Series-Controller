@@ -1,3 +1,6 @@
+import { useEffect } from "react";
+import { usePersistedSettings } from "../hooks/usePersistedSettings";
+
 interface ColorPickerProps {
   red: number;
   green: number;
@@ -15,6 +18,21 @@ export function ColorPicker({
   onGreenChange,
   onBlueChange,
 }: ColorPickerProps) {
+  const { updateSetting } = usePersistedSettings();
+
+  // Save color changes to persistent storage
+  useEffect(() => {
+    updateSetting("red", red);
+  }, [red, updateSetting]);
+
+  useEffect(() => {
+    updateSetting("green", green);
+  }, [green, updateSetting]);
+
+  useEffect(() => {
+    updateSetting("blue", blue);
+  }, [blue, updateSetting]);
+
   const bgColor = "rgb(" + red + ", " + green + ", " + blue + ")";
 
   return (

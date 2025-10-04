@@ -1,9 +1,11 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { sendNotification } from "@tauri-apps/plugin-notification";
 import { FAN_PRESETS } from "../constants/colors";
 import { DeviceInfo, SensorData, FanPreset } from "../types";
 import { FanControl } from "./FanControl";
 import { SensorDisplay } from "./SensorDisplay";
+import { usePersistedSettings } from "../hooks/usePersistedSettings";
 
 interface PowerControlProps {
   deviceInfo: DeviceInfo | null;
@@ -17,10 +19,15 @@ export function PowerControl({
   onCheckSetup,
 }: PowerControlProps) {
   const [sensorData, setSensorData] = useState<SensorData | null>(null);
-  const [cpuFan, setCpuFan] = useState(50);
-  const [gpuFan, setGpuFan] = useState(50);
-  const [currentMode, setCurrentMode] = useState<string>("USTT_Balanced");
-  const [selectedPreset, setSelectedPreset] = useState<FanPreset | null>(null);
+  const { settings, updateSetting } = usePersistedSettings();
+
+  // Use persisted settings or defaults
+  const cpuFan = settings?.cpuFan ?? 50;
+  const gpuFan = settings?.gpuFan ?? 50;
+  const currentMode = settings?.currentMode ?? "USTT_Balanced";
+  const selectedPreset = settings?.selectedPreset
+    ? FAN_PRESETS.find((p) => p.name === settings.selectedPreset)
+    : null;
 
   const readSensors = async () => {
     if (!deviceInfo?.power_supported) return;
@@ -50,10 +57,10 @@ export function PowerControl({
   const setPowerMode = async (mode: string) => {
     try {
       const result: string = await invoke("set_power_mode", { mode });
-      setCurrentMode(mode);
+      updateSetting("currentMode", mode);
       // Limpar preset selecionado quando mudar de modo
       if (mode !== "Manual") {
-        setSelectedPreset(null);
+        updateSetting("selectedPreset", null);
       }
       showStatus(result);
     } catch (error) {
@@ -61,10 +68,45 @@ export function PowerControl({
     }
   };
 
+  const activateTurboMode = async () => {
+    try {
+      const result: string = await invoke("set_turbo_mode");
+      showStatus(result);
+
+      // Send notification
+      await sendNotification({
+        title: "🚀 Modo Turbo Ativado",
+        body: "Ventiladores configurados para velocidade máxima",
+      });
+    } catch (error) {
+      showStatus("Erro: " + String(error), true);
+    }
+  };
+
+  const deactivateTurboMode = async () => {
+    try {
+      // Return to balanced mode
+      const result: string = await invoke("set_power_mode", {
+        mode: "USTT_Balanced",
+      });
+      updateSetting("currentMode", "USTT_Balanced");
+      updateSetting("selectedPreset", null);
+      showStatus(result);
+
+      // Send notification
+      await sendNotification({
+        title: "⚖️ Modo Balanceado Restaurado",
+        body: "Ventiladores retornaram ao modo automático balanceado",
+      });
+    } catch (error) {
+      showStatus("Erro: " + String(error), true);
+    }
+  };
+
   const applyFanPreset = async (preset: FanPreset) => {
-    setCpuFan(preset.cpu);
-    setGpuFan(preset.gpu);
-    setSelectedPreset(preset);
+    updateSetting("cpuFan", preset.cpu);
+    updateSetting("gpuFan", preset.gpu);
+    updateSetting("selectedPreset", preset.name);
     try {
       const result: string = await invoke("set_fan_boost", {
         cpu_rpm: preset.cpu,
@@ -74,6 +116,14 @@ export function PowerControl({
     } catch (error) {
       showStatus("Erro: " + String(error), true);
     }
+  };
+
+  const handleCpuFanChange = (value: number) => {
+    updateSetting("cpuFan", value);
+  };
+
+  const handleGpuFanChange = (value: number) => {
+    updateSetting("gpuFan", value);
   };
 
   const applyFanSpeeds = async () => {
@@ -158,6 +208,25 @@ export function PowerControl({
       <SensorDisplay sensors={sensorData} />
 
       <div className="section">
+        <h3>Modo Turbo</h3>
+        <div className="button-row">
+          <button className="mode-btn turbo-btn" onClick={activateTurboMode}>
+            🚀 TURBO (F12)
+          </button>
+          <button
+            className="mode-btn balanced-btn"
+            onClick={deactivateTurboMode}
+          >
+            ⚖️ Balanceado
+          </button>
+        </div>
+        <p className="info-text">
+          💡 Pressione F12 ou clique em TURBO para ativar ventiladores em
+          velocidade máxima
+        </p>
+      </div>
+
+      <div className="section">
         <h3>Presets de Ventilação</h3>
         <div className="button-row">
           {FAN_PRESETS.map((preset) => (
@@ -178,8 +247,8 @@ export function PowerControl({
         <FanControl
           fan1={cpuFan}
           fan2={gpuFan}
-          onFan1Change={setCpuFan}
-          onFan2Change={setGpuFan}
+          onFan1Change={handleCpuFanChange}
+          onFan2Change={handleGpuFanChange}
           onApply={applyFanSpeeds}
           fanControlLimited={deviceInfo?.fan_control_limited}
         />
