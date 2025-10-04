@@ -1,0 +1,8 @@
+/* Allow pkexec to run shell commands for ACPI without password for wheel group */
+polkit.addRule(function(action, subject) {
+    if (action.id == "org.freedesktop.policykit.exec" &&
+        action.lookup("program") == "/usr/bin/sh" &&
+        subject.isInGroup("wheel")) {
+        return polkit.Result.YES;
+    }
+});
