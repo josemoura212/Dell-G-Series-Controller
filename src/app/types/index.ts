@@ -4,6 +4,7 @@ export interface DeviceInfo {
   power_supported: boolean;
   power_modes: string[];
   fan_control_limited?: boolean;
+  turbo_enabled?: boolean;
 }
 
 export interface SensorData {
@@ -26,4 +27,4 @@ export interface FanPreset {
   gpu: number;
 }
 
-export type LedMode = "static" | "morph" | "off";
+export type LedMode = "static" | "morph" | "breathing" | "zone" | "off";

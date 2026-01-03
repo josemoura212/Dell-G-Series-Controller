@@ -2,15 +2,17 @@ use dell_core::{AcpiController, KeyboardController};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 
 // Application state
 pub struct AppState {
     keyboard: Arc<Mutex<Option<KeyboardController>>>,
     acpi: Arc<Mutex<Option<AcpiController>>>,
+    turbo_enabled: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20,6 +22,7 @@ pub struct DeviceInfo {
     power_supported: bool,
     power_modes: Vec<String>,
     fan_control_limited: bool,
+    turbo_enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,6 +113,7 @@ fn init_device(state: State<AppState>) -> Result<DeviceInfo, String> {
 
     let keyboard_supported = keyboard.is_some();
     let power_supported = acpi.is_some();
+    let turbo_enabled = state.turbo_enabled.load(Ordering::Relaxed);
 
     let (model, power_modes, fan_control_limited) = match acpi.as_ref() {
         Some(acpi_controller) => {
@@ -132,7 +136,45 @@ fn init_device(state: State<AppState>) -> Result<DeviceInfo, String> {
         power_supported,
         power_modes,
         fan_control_limited,
+        turbo_enabled,
     })
+}
+
+#[tauri::command]
+fn set_pulse_effect(
+    state: State<AppState>,
+    red: u8,
+    green: u8,
+    blue: u8,
+    speed: u16,
+) -> Result<String, String> {
+    let mut keyboard = state.keyboard.lock().unwrap();
+    if let Some(kb) = keyboard.as_mut() {
+        kb.set_pulse(red, green, blue, speed)
+            .map_err(|e| e.to_string())?;
+        Ok("Efeito Breathing aplicado".to_string())
+    } else {
+        Err("Teclado não encontrado".to_string())
+    }
+}
+
+#[tauri::command]
+fn set_zone_colors(state: State<AppState>, colors: Vec<[u8; 3]>) -> Result<String, String> {
+    if colors.len() != 4 {
+        return Err("Must provide exactly 4 colors".to_string());
+    }
+    let mut keyboard = state.keyboard.lock().unwrap();
+    if let Some(kb) = keyboard.as_mut() {
+        let fixed_colors: Box<[[u8; 3]; 4]> = colors
+            .into_boxed_slice()
+            .try_into()
+            .map_err(|_| "Invalid color array")?;
+        kb.set_four_zone_colors(&fixed_colors)
+            .map_err(|e| e.to_string())?;
+        Ok("Cores de zona aplicadas".to_string())
+    } else {
+        Err("Teclado não encontrado".to_string())
+    }
 }
 
 // Keyboard LED commands
@@ -230,36 +272,9 @@ fn set_power_mode(state: State<AppState>, mode: String) -> Result<String, String
             .set_power_mode(&mode)
             .map_err(|e| e.to_string())?;
 
-        // If Performance mode is selected, set fans to 100%
-        if mode == "USTT_Performance" {
-            std::thread::sleep(std::time::Duration::from_millis(200));
-
-            let mut success_count = 0;
-            let mut errors = Vec::new();
-
-            // Set both fans to 100% (0xFF)
-            match acpi_controller.set_fan_boost(1, 0xFF) {
-                Ok(_) => success_count += 1,
-                Err(e) => errors.push(format!("CPU fan: {}", e)),
-            }
-
-            match acpi_controller.set_fan_boost(2, 0xFF) {
-                Ok(_) => success_count += 1,
-                Err(e) => errors.push(format!("GPU fan: {}", e)),
-            }
-
-            if success_count > 0 {
-                return Ok(format!(
-                    "✓ Modo Performance ativado - Ventiladores em 100% ({}/2 sucesso)",
-                    success_count
-                ));
-            } else {
-                return Ok(format!(
-                    "✓ Modo Performance ativado (ventiladores não suportados: {})",
-                    errors.join(", ")
-                ));
-            }
-        }
+        // Reset turbo state if changing modes manually (unless we are just enabling turbo)
+        // But here we are setting a specific mode.
+        state.turbo_enabled.store(false, Ordering::Relaxed);
 
         Ok(format!("✓ Modo de energia: {}", mode))
     } else {
@@ -281,6 +296,7 @@ fn set_fan_boost(state: State<AppState>, params: FanBoostParams) -> Result<Strin
         if let Err(_) = acpi_controller.set_power_mode("Manual") {
             // Log warning but continue
         }
+        state.turbo_enabled.store(false, Ordering::Relaxed);
 
         // Small delay to let the mode change take effect
         std::thread::sleep(std::time::Duration::from_millis(200));
@@ -321,38 +337,60 @@ fn set_fan_boost(state: State<AppState>, params: FanBoostParams) -> Result<Strin
 }
 
 #[tauri::command]
-fn set_turbo_mode(state: State<AppState>) -> Result<String, String> {
+fn set_turbo_mode(state: State<AppState>, enable: bool) -> Result<String, String> {
     let mut acpi = state.acpi.lock().unwrap();
     if let Some(acpi_controller) = acpi.as_mut() {
-        // Set fans to maximum (100%)
-        let mut success_count = 0;
-        let mut errors = Vec::new();
+        if enable {
+            // TURBO ON: Max fans
+            // Ensure we're in Manual mode for fan control
+            if let Err(_) = acpi_controller.set_power_mode("Manual") {
+                // Log warning but continue
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
 
-        // Set both fans to 100% (0xFF)
-        match acpi_controller.set_fan_boost(1, 0xFF) {
-            Ok(_) => success_count += 1,
-            Err(e) => errors.push(format!("CPU fan: {}", e)),
-        }
+            let mut success_count = 0;
+            let mut errors = Vec::new();
 
-        match acpi_controller.set_fan_boost(2, 0xFF) {
-            Ok(_) => success_count += 1,
-            Err(e) => errors.push(format!("GPU fan: {}", e)),
-        }
+            match acpi_controller.set_fan_boost(1, 0xFF) {
+                Ok(_) => success_count += 1,
+                Err(e) => errors.push(format!("CPU fan: {}", e)),
+            }
+            match acpi_controller.set_fan_boost(2, 0xFF) {
+                Ok(_) => success_count += 1,
+                Err(e) => errors.push(format!("GPU fan: {}", e)),
+            }
 
-        if success_count > 0 {
-            Ok(format!(
-                "🚀 MODO TURBO ATIVADO - Ventiladores em 100% ({}/2 sucesso)",
-                success_count
-            ))
+            if success_count > 0 {
+                state.turbo_enabled.store(true, Ordering::Relaxed);
+                Ok(format!(
+                    "🚀 MODO TURBO ATIVADO - Ventiladores em 100% ({}/2 sucesso)",
+                    success_count
+                ))
+            } else {
+                Err(format!(
+                    "❌ Modo turbo não disponível: {}",
+                    errors.join(", ")
+                ))
+            }
         } else {
-            Err(format!(
-                "❌ Modo turbo não disponível: {}",
-                errors.join(", ")
-            ))
+            // TURBO OFF: Silent mode
+            match acpi_controller.set_power_mode("USTT_Quiet") {
+                Ok(_) => {
+                    state.turbo_enabled.store(false, Ordering::Relaxed);
+                    Ok("🌙 Modo Silencioso Ativado (Turbo Desligado)".to_string())
+                }
+                Err(e) => Err(format!("Erro ao desativar turbo: {}", e)),
+            }
         }
     } else {
         Err("ACPI not available".to_string())
     }
+}
+
+#[tauri::command]
+fn toggle_turbo(state: State<AppState>) -> Result<String, String> {
+    let is_turbo = state.turbo_enabled.load(Ordering::Relaxed);
+    set_turbo_mode(state, !is_turbo)
 }
 
 #[tauri::command]
@@ -381,6 +419,7 @@ pub fn run() {
 
     // Initialize controllers
     let keyboard = Arc::new(Mutex::new(KeyboardController::new(false).ok()));
+    let turbo_enabled = Arc::new(AtomicBool::new(false));
 
     // Try to create ACPI controller and log any errors
     let acpi_result = AcpiController::new();
@@ -398,7 +437,17 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--minimized"]),
         ))
-        .manage(AppState { keyboard, acpi })
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            let _ = app
+                .get_webview_window("main")
+                .expect("no main window")
+                .set_focus();
+        }))
+        .manage(AppState {
+            keyboard,
+            acpi,
+            turbo_enabled,
+        })
         .invoke_handler(tauri::generate_handler![
             check_permissions,
             run_setup_script,
@@ -412,33 +461,72 @@ pub fn run() {
             set_power_mode,
             set_fan_boost,
             set_turbo_mode,
+            toggle_turbo,
             get_sensors,
+            set_pulse_effect,
+            set_zone_colors,
         ])
         .setup(|app| {
+            // Check for --minimized flag
+            let mut start_minimized = false;
+
+            // Simple check of args
+            if std::env::args().any(|a| a == "--minimized") {
+                start_minimized = true;
+            }
+
+            if start_minimized {
+                if let Some(window) = app.get_webview_window("main") {
+                    window.hide().unwrap();
+                }
+            }
+
             // Register global shortcut for turbo mode
             #[cfg(desktop)]
             {
                 use tauri_plugin_global_shortcut::{Code, Modifiers, ShortcutState};
 
-                app.handle().plugin(
-                    tauri_plugin_global_shortcut::Builder::new()
-                        .with_shortcuts(["f12"])?
-                        .with_handler(|app, shortcut, event| {
-                            if event.state == ShortcutState::Pressed {
-                                if shortcut.matches(Modifiers::empty(), Code::F12) {
-                                    let app_handle = app.clone();
-                                    tauri::async_runtime::spawn(async move {
-                                        // Call the turbo mode command directly
-                                        let state = app_handle.state::<AppState>();
-                                        if let Err(e) = set_turbo_mode(state) {
-                                            eprintln!("Failed to set turbo mode: {:?}", e);
+                match tauri_plugin_global_shortcut::Builder::new().with_shortcuts(["f9"]) {
+                    Ok(builder) => {
+                        if let Err(e) = app.handle().plugin(
+                            builder
+                                .with_handler(|app, shortcut, event| {
+                                    if event.state == ShortcutState::Pressed {
+                                        if shortcut.matches(Modifiers::empty(), Code::F9) {
+                                            let app_handle = app.clone();
+                                            tauri::async_runtime::spawn(async move {
+                                                // Call the turbo toggle command
+                                                let state = app_handle.state::<AppState>();
+
+                                                // We need to notify the frontend too, ideally.
+                                                // For now, just perform the action.
+                                                let result = toggle_turbo(state);
+
+                                                // Send notification
+                                                use tauri_plugin_notification::NotificationExt;
+                                                if let Ok(msg) = result {
+                                                    let _ = app_handle
+                                                        .notification()
+                                                        .builder()
+                                                        .title("Dell G-Series Control")
+                                                        .body(&msg)
+                                                        .show();
+                                                    // Emit event to update UI
+                                                    let _ = app_handle.emit("turbo-toggled", ());
+                                                }
+                                            });
                                         }
-                                    });
-                                }
-                            }
-                        })
-                        .build(),
-                )?;
+                                    }
+                                })
+                                .build(),
+                        ) {
+                            eprintln!("Failed to register global shortcuts plugin: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to configure global shortcuts: {}", e);
+                    }
+                }
             }
 
             // Create system tray

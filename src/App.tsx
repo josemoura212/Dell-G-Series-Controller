@@ -39,6 +39,7 @@ function App() {
           gap: "20px",
           maxWidth: "1400px",
           margin: "0 auto 20px",
+          alignItems: "start",
         }}
       >
         <KeyboardControl

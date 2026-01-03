@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 
-interface PersistedSettings {
+export interface PersistedSettings {
   currentMode: string;
   selectedPreset: string | null;
   cpuFan: number;
@@ -10,6 +10,10 @@ interface PersistedSettings {
   blue: number;
   duration: number;
   currentLedMode: string;
+  zone0?: [number, number, number];
+  zone1?: [number, number, number];
+  zone2?: [number, number, number];
+  zone3?: [number, number, number];
 }
 
 const SETTINGS_KEY = "dell-controller-settings";

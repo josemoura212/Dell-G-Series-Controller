@@ -270,11 +270,194 @@ impl KeyboardController {
         )?;
 
         self.battery_flashing()?;
-
         let _ = self.handle.lock().unwrap().reset();
         Ok(())
     }
 
+    pub fn set_pulse(&self, red: u8, green: u8, blue: u8, speed: u16) -> Result<()> {
+        self.set_dim(0)?;
+        let tempo = if speed == 0 { TEMPO_MIN } else { speed };
+
+        // AC Sleep - Off
+        self.apply_action(
+            0,
+            0,
+            0,
+            DURATION_MAX,
+            TEMPO_MIN,
+            AC_SLEEP,
+            COLOR,
+            &ZONES_ALL,
+        )?;
+
+        // AC Charged - Pulse
+        self.apply_action(
+            red,
+            green,
+            blue,
+            DURATION_MAX,
+            tempo,
+            AC_CHARGED,
+            PULSE,
+            &ZONES_ALL,
+        )?;
+
+        // AC Charging - Pulse
+        self.apply_action(
+            red,
+            green,
+            blue,
+            DURATION_MAX,
+            tempo,
+            AC_CHARGING,
+            PULSE,
+            &ZONES_ALL,
+        )?;
+
+        // DC Sleep - Off
+        self.apply_action(
+            0,
+            0,
+            0,
+            DURATION_MAX,
+            TEMPO_MIN,
+            DC_SLEEP,
+            COLOR,
+            &ZONES_ALL,
+        )?;
+
+        // DC On - Pulse
+        self.apply_action(
+            red,
+            green,
+            blue,
+            DURATION_MAX,
+            tempo,
+            DC_ON,
+            PULSE,
+            &ZONES_ALL,
+        )?;
+
+        self.battery_flashing()?;
+        let _ = self.handle.lock().unwrap().reset();
+        Ok(())
+    }
+
+    pub fn set_zone_static(&self, zone: u8, red: u8, green: u8, blue: u8) -> Result<()> {
+        // Implement simple single-zone static color
+        // Note: setting one zone might reset others if we don't handle it carefully,
+        // but for now let's allow it as a direct command.
+        // Actually, to set one zone without affecting others, we'd need to read the current state
+        // or build a comprehensive animation for all zones.
+        // But the user asked for 4-zone control, and calls set_zone_colors (all 4).
+        // set_zone_static is kept for completeness or if called individually.
+
+        self.set_dim(0)?;
+
+        // We'll just define the animation for THIS zone.
+        // Important: this might clear other zones if the animation ID is shared and we overwrite it.
+        // But apply_action overwrites the whole animation ID.
+        // So passing just one zone to apply_action will make THAT zone inherit the action,
+        // but what happens to others? They might default to nothing (off) or stay as is?
+        // In Elc terms, if we start_series for zone 0, we define actions for zone 0.
+        // If we don't mention zone 1, it might have 0 actions.
+
+        // Use the colors/zones helper strategy for robust 4-zone control instead.
+        // But for this function, let's just do what we can.
+
+        // AC Charged
+        self.apply_action(
+            red,
+            green,
+            blue,
+            DURATION_MAX,
+            TEMPO_MIN,
+            AC_CHARGED,
+            COLOR,
+            &[zone],
+        )?;
+        self.apply_action(
+            red,
+            green,
+            blue,
+            DURATION_MAX,
+            TEMPO_MIN,
+            AC_CHARGING,
+            COLOR,
+            &[zone],
+        )?;
+        self.apply_action(
+            red / 2,
+            green / 2,
+            blue / 2,
+            DURATION_MAX,
+            TEMPO_MIN,
+            DC_ON,
+            COLOR,
+            &[zone],
+        )?;
+
+        self.battery_flashing()?;
+        let _ = self.handle.lock().unwrap().reset();
+        Ok(())
+    }
+
+    pub fn set_four_zone_colors(&self, colors: &[[u8; 3]; 4]) -> Result<()> {
+        self.set_dim(0)?;
+
+        // Helper to apply multi-zone colors to a specific animation ID
+        let apply_multizone = |animation: u16, dim_factor: u8| -> Result<()> {
+            self.elc.remove_animation(animation)?;
+            self.elc.start_new_animation(animation)?;
+
+            for (zone_idx, color) in colors.iter().enumerate() {
+                let zone = zone_idx as u8;
+                let r = color[0] / dim_factor;
+                let g = color[1] / dim_factor;
+                let b = color[2] / dim_factor;
+
+                self.elc.start_series(&[zone], 1)?;
+                self.elc
+                    .add_action(&[Action::new(COLOR, DURATION_MAX, TEMPO_MIN, r, g, b)])?;
+            }
+
+            self.elc.finish_save_animation(animation)?;
+            self.elc.set_default_animation(animation)?;
+            Ok(())
+        };
+
+        // Apply to all power states
+        apply_multizone(AC_SLEEP, 255)?; // Off (div by 255 -> 0)
+                                         // Actually just use 0,0,0 explicitly for sleep to be safe
+        self.apply_action(
+            0,
+            0,
+            0,
+            DURATION_MAX,
+            TEMPO_MIN,
+            AC_SLEEP,
+            COLOR,
+            &ZONES_ALL,
+        )?;
+        self.apply_action(
+            0,
+            0,
+            0,
+            DURATION_MAX,
+            TEMPO_MIN,
+            DC_SLEEP,
+            COLOR,
+            &ZONES_ALL,
+        )?;
+
+        apply_multizone(AC_CHARGED, 1)?;
+        apply_multizone(AC_CHARGING, 1)?;
+        apply_multizone(DC_ON, 2)?; // Half brightness
+
+        self.battery_flashing()?;
+        let _ = self.handle.lock().unwrap().reset();
+        Ok(())
+    }
     pub fn remove_all_animations(&self) -> Result<()> {
         // Turn off LEDs by setting to black
         self.set_static(0, 0, 0)?;

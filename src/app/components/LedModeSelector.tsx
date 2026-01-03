@@ -39,13 +39,26 @@ export function LedModeSelector({
         >
           Desligar
         </button>
+        <button
+          className={
+            "mode-btn " + (currentMode === "breathing" ? "active" : "")
+          }
+          onClick={() => onModeChange("breathing")}
+        >
+          Respiração
+        </button>
+        <button
+          className={"mode-btn " + (currentMode === "zone" ? "active" : "")}
+          onClick={() => onModeChange("zone")}
+        >
+          Zonas
+        </button>
       </div>
 
-      {currentMode === "morph" && (
+      {(currentMode === "morph" || currentMode === "breathing") && (
         <div className="slider-group">
           <label>
-            ⏱️ Duração da Transição: {duration} (
-            {((duration / 1000) * 100).toFixed(0)}%)
+            ⏱️ Velocidade: {duration} ({((duration / 1000) * 100).toFixed(0)}%)
           </label>
           <input
             type="range"

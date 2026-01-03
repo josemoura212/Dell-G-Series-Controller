@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { enable, disable, isEnabled } from "@tauri-apps/plugin-autostart";
 
 export function useAutostart() {
   const [autostartEnabled, setAutostartEnabled] = useState(false);
@@ -9,7 +10,8 @@ export function useAutostart() {
 
   const checkAutostartStatus = async () => {
     try {
-      setAutostartEnabled(false);
+      const enabled = await isEnabled();
+      setAutostartEnabled(enabled);
     } catch (error) {
       console.error("Erro ao verificar autostart:", error);
     }
@@ -17,7 +19,13 @@ export function useAutostart() {
 
   const toggleAutostart = async () => {
     try {
-      setAutostartEnabled(!autostartEnabled);
+      if (autostartEnabled) {
+        await disable();
+        setAutostartEnabled(false);
+      } else {
+        await enable();
+        setAutostartEnabled(true);
+      }
     } catch (error) {
       console.error("Erro ao configurar autostart:", error);
     }

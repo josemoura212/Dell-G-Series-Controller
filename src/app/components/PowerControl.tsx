@@ -1,8 +1,19 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { sendNotification } from "@tauri-apps/plugin-notification";
-import { FAN_PRESETS } from "../constants/colors";
-import { DeviceInfo, SensorData, FanPreset } from "../types";
+import { listen } from "@tauri-apps/api/event";
+import {
+  isPermissionGranted,
+  requestPermission,
+  sendNotification,
+} from "@tauri-apps/plugin-notification";
+import { DeviceInfo, SensorData } from "../types";
+// ... imports
+
+// ... inside component
+
+// ... imports
+
+// ... inside component
 import { FanControl } from "./FanControl";
 import { SensorDisplay } from "./SensorDisplay";
 import { usePersistedSettings } from "../hooks/usePersistedSettings";
@@ -19,15 +30,13 @@ export function PowerControl({
   onCheckSetup,
 }: PowerControlProps) {
   const [sensorData, setSensorData] = useState<SensorData | null>(null);
+  const [isTurbo, setIsTurbo] = useState(false);
   const { settings, updateSetting } = usePersistedSettings();
 
   // Use persisted settings or defaults
   const cpuFan = settings?.cpuFan ?? 50;
   const gpuFan = settings?.gpuFan ?? 50;
   const currentMode = settings?.currentMode ?? "USTT_Balanced";
-  const selectedPreset = settings?.selectedPreset
-    ? FAN_PRESETS.find((p) => p.name === settings.selectedPreset)
-    : null;
 
   const readSensors = async () => {
     if (!deviceInfo?.power_supported) return;
@@ -45,13 +54,27 @@ export function PowerControl({
     // Read sensors immediately when component mounts
     readSensors();
 
+    // Sync turbo state
+    if (deviceInfo.turbo_enabled !== undefined) {
+      setIsTurbo(deviceInfo.turbo_enabled);
+    }
+
     // Set up automatic sensor reading every 3 seconds
     const interval = setInterval(() => {
       readSensors();
     }, 3000);
 
+    // Listen for turbo toggle events from backend (Fn+F9)
+    const unlisten = listen("turbo-toggled", () => {
+      setIsTurbo((prev) => !prev);
+      // Maybe refresh other states if needed
+    });
+
     // Cleanup interval on unmount
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      unlisten.then((f) => f());
+    };
   }, [deviceInfo]);
 
   const setPowerMode = async (mode: string) => {
@@ -62,59 +85,40 @@ export function PowerControl({
       if (mode !== "Manual") {
         updateSetting("selectedPreset", null);
       }
+      setIsTurbo(false); // Manually setting mode disables turbo
       showStatus(result);
     } catch (error) {
       showStatus("Erro: " + String(error), true);
     }
   };
 
-  const activateTurboMode = async () => {
+  const toggleTurboPromise = async () => {
     try {
-      const result: string = await invoke("set_turbo_mode");
-      showStatus(result);
+      const result: string = await invoke("toggle_turbo");
+      setIsTurbo((prev) => !prev);
 
-      // Send notification
-      await sendNotification({
-        title: "🚀 Modo Turbo Ativado",
-        body: "Ventiladores configurados para velocidade máxima",
-      });
-    } catch (error) {
-      showStatus("Erro: " + String(error), true);
-    }
-  };
+      let permissionGranted = await isPermissionGranted();
+      if (!permissionGranted) {
+        const permission = await requestPermission();
+        permissionGranted = permission === "granted";
+      }
 
-  const deactivateTurboMode = async () => {
-    try {
-      // Return to balanced mode
-      const result: string = await invoke("set_power_mode", {
-        mode: "USTT_Balanced",
-      });
-      updateSetting("currentMode", "USTT_Balanced");
-      updateSetting("selectedPreset", null);
-      showStatus(result);
-
-      // Send notification
-      await sendNotification({
-        title: "⚖️ Modo Balanceado Restaurado",
-        body: "Ventiladores retornaram ao modo automático balanceado",
-      });
-    } catch (error) {
-      showStatus("Erro: " + String(error), true);
-    }
-  };
-
-  const applyFanPreset = async (preset: FanPreset) => {
-    updateSetting("cpuFan", preset.cpu);
-    updateSetting("gpuFan", preset.gpu);
-    updateSetting("selectedPreset", preset.name);
-    try {
-      const result: string = await invoke("set_fan_boost", {
-        cpu_rpm: preset.cpu,
-        gpu_rpm: preset.gpu,
-      });
+      if (permissionGranted) {
+        sendNotification({
+          title: "Modo Turbo",
+          body: result,
+        });
+      }
       showStatus(result);
     } catch (error) {
       showStatus("Erro: " + String(error), true);
+      let permissionGranted = await isPermissionGranted();
+      if (permissionGranted) {
+        sendNotification({
+          title: "Erro no Modo Turbo",
+          body: String(error),
+        });
+      }
     }
   };
 
@@ -142,6 +146,7 @@ export function PowerControl({
 
       // Try the imported invoke first
       const result: string = await invoke("set_fan_boost", params);
+      setIsTurbo(false);
       showStatus(result);
     } catch (error) {
       showStatus("Erro: " + String(error), true);
@@ -150,7 +155,7 @@ export function PowerControl({
 
   if (!deviceInfo?.power_supported) {
     return (
-      <section className="card">
+      <section className="card glass-panel">
         <h2>⚡ Controle de Energia</h2>
         <div className="warning-box">
           <p>⚠️ ACPI não disponível</p>
@@ -166,83 +171,51 @@ export function PowerControl({
   }
 
   return (
-    <section className="card">
-      <h2>⚡ Controle de Energia</h2>
+    <section className="card glass-panel">
+      <div className="card-header">
+        <h2>⚡ Controle de Energia</h2>
+        <button
+          className={`turbo-toggle-btn ${isTurbo ? "active" : ""}`}
+          onClick={toggleTurboPromise}
+          title="Alternar Modo Turbo (Fn+F9)"
+        >
+          {isTurbo ? "🚀 TURBO ON" : "🚀 TURBO OFF"}
+        </button>
+      </div>
 
       <div className="section">
         <h3>Modo de Energia</h3>
-        <div className="button-row">
+        <div className="button-group power-modes">
           <button
             className={`mode-btn ${
-              currentMode === "USTT_Quiet" ? "active" : ""
+              !isTurbo && currentMode === "USTT_Quiet" ? "active" : ""
             }`}
             onClick={() => setPowerMode("USTT_Quiet")}
           >
-            🌙 Silencioso
+            <span className="icon">🌙</span> Silencioso
           </button>
           <button
             className={`mode-btn ${
-              currentMode === "USTT_Balanced" ? "active" : ""
+              !isTurbo && currentMode === "USTT_Balanced" ? "active" : ""
             }`}
             onClick={() => setPowerMode("USTT_Balanced")}
           >
-            ⚖️ Balanceado
+            <span className="icon">⚖️</span> Balanceado
           </button>
           <button
             className={`mode-btn ${
-              currentMode === "USTT_Performance" ? "active" : ""
+              !isTurbo && currentMode === "USTT_Performance" ? "active" : ""
             }`}
             onClick={() => setPowerMode("USTT_Performance")}
           >
-            🚀 Performance
-          </button>
-          <button
-            className={`mode-btn ${currentMode === "Manual" ? "active" : ""}`}
-            onClick={() => setPowerMode("Manual")}
-          >
-            🎛️ Manual
+            <span className="icon">🔥</span> Performance
           </button>
         </div>
       </div>
 
       <SensorDisplay sensors={sensorData} />
 
-      <div className="section">
-        <h3>Modo Turbo</h3>
-        <div className="button-row">
-          <button className="mode-btn turbo-btn" onClick={activateTurboMode}>
-            🚀 TURBO (F12)
-          </button>
-          <button
-            className="mode-btn balanced-btn"
-            onClick={deactivateTurboMode}
-          >
-            ⚖️ Balanceado
-          </button>
-        </div>
-        <p className="info-text">
-          💡 Pressione F12 ou clique em TURBO para ativar ventiladores em
-          velocidade máxima
-        </p>
-      </div>
-
-      <div className="section">
-        <h3>Presets de Ventilação</h3>
-        <div className="button-row">
-          {FAN_PRESETS.map((preset) => (
-            <button
-              key={preset.name}
-              className={`preset-btn ${
-                selectedPreset?.name === preset.name ? "active" : ""
-              }`}
-              onClick={() => applyFanPreset(preset)}
-            >
-              {preset.icon} {preset.name}
-            </button>
-          ))}
-        </div>
-      </div>
-
+      {/* Hidden manual control for safety, can be re-enabled if needed */}
       {currentMode === "Manual" && (
         <FanControl
           fan1={cpuFan}
