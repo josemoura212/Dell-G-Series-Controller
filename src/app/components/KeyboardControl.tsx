@@ -58,6 +58,10 @@ export function KeyboardControl({
           blue,
           speed: duration,
         });
+      } else if (currentMode === "spectrum") {
+        result = await invoke("set_spectrum", { speed: duration });
+      } else if (currentMode === "rainbow") {
+        result = await invoke("set_rainbow", { speed: duration });
       } else if (currentMode === "zone") {
         // Should be handled by individual zone updates or a separate apply button
         // For now, let's create a bulk apply for zones
@@ -123,6 +127,14 @@ export function KeyboardControl({
         <h2>🎹 Controle do Teclado RGB</h2>
       </div>
 
+      <LedModeSelector
+        currentMode={currentMode}
+        duration={duration}
+        onModeChange={handleModeChange}
+        onDurationChange={handleDurationChange}
+        onApply={applyColor}
+      />
+
       <div className="section">
         <h3>Cores Rápidas</h3>
         <div className="color-grid">
@@ -130,7 +142,14 @@ export function KeyboardControl({
             <button
               key={preset.name}
               className="color-btn"
-              style={{ background: preset.color }}
+              style={{
+                background: preset.color,
+                color: preset.textColor || "white",
+                textShadow:
+                  preset.textColor === "#000"
+                    ? "none"
+                    : "0 1px 3px rgba(0, 0, 0, 0.8)",
+              }}
               onClick={() => applyPresetColor(preset.rgb)}
             >
               {preset.name}
@@ -215,14 +234,6 @@ export function KeyboardControl({
           onBlueChange={handleBlueChange}
         />
       )}
-
-      <LedModeSelector
-        currentMode={currentMode}
-        duration={duration}
-        onModeChange={handleModeChange}
-        onDurationChange={handleDurationChange}
-        onApply={applyColor}
-      />
     </section>
   );
 }

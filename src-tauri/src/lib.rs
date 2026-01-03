@@ -177,6 +177,28 @@ fn set_zone_colors(state: State<AppState>, colors: Vec<[u8; 3]>) -> Result<Strin
     }
 }
 
+#[tauri::command]
+fn set_spectrum(state: State<AppState>, speed: u16) -> Result<String, String> {
+    let mut keyboard = state.keyboard.lock().unwrap();
+    if let Some(kb) = keyboard.as_mut() {
+        kb.set_spectrum(speed).map_err(|e| e.to_string())?;
+        Ok("Efeito Spectrum aplicado".to_string())
+    } else {
+        Err("Teclado não encontrado".to_string())
+    }
+}
+
+#[tauri::command]
+fn set_rainbow(state: State<AppState>, speed: u16) -> Result<String, String> {
+    let mut keyboard = state.keyboard.lock().unwrap();
+    if let Some(kb) = keyboard.as_mut() {
+        kb.set_rainbow(speed).map_err(|e| e.to_string())?;
+        Ok("Efeito Rainbow aplicado".to_string())
+    } else {
+        Err("Teclado não encontrado".to_string())
+    }
+}
+
 // Keyboard LED commands
 #[tauri::command]
 fn set_static_color(
@@ -465,6 +487,8 @@ pub fn run() {
             get_sensors,
             set_pulse_effect,
             set_zone_colors,
+            set_spectrum,
+            set_rainbow,
         ])
         .setup(|app| {
             // Check for --minimized flag

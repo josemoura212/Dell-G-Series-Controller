@@ -18,6 +18,7 @@ export interface PresetColor {
   name: string;
   rgb: [number, number, number];
   color: string;
+  textColor?: string;
 }
 
 export interface FanPreset {
@@ -27,4 +28,11 @@ export interface FanPreset {
   gpu: number;
 }
 
-export type LedMode = "static" | "morph" | "breathing" | "zone" | "off";
+export type LedMode =
+  | "static"
+  | "morph"
+  | "breathing"
+  | "zone"
+  | "spectrum"
+  | "rainbow"
+  | "off";

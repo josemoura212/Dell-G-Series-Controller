@@ -18,44 +18,27 @@ export function LedModeSelector({
   return (
     <div className="section">
       <h3>Modos de LED</h3>
-      <div className="mode-buttons flex flex-row gap-3">
-        <button
-          className={"mode-btn " + (currentMode === "static" ? "active" : "")}
-          onClick={() => onModeChange("static")}
+
+      <div style={{ marginBottom: "16px" }}>
+        <select
+          value={currentMode}
+          onChange={(e) => onModeChange(e.target.value as any)}
+          className="dark-select"
         >
-          Cor Estática
-        </button>
-        <button
-          className={"mode-btn " + (currentMode === "morph" ? "active" : "")}
-          onClick={() => onModeChange("morph")}
-        >
-          Transição
-        </button>
-        <button
-          className={
-            "mode-btn danger " + (currentMode === "off" ? "active" : "")
-          }
-          onClick={() => onModeChange("off")}
-        >
-          Desligar
-        </button>
-        <button
-          className={
-            "mode-btn " + (currentMode === "breathing" ? "active" : "")
-          }
-          onClick={() => onModeChange("breathing")}
-        >
-          Respiração
-        </button>
-        <button
-          className={"mode-btn " + (currentMode === "zone" ? "active" : "")}
-          onClick={() => onModeChange("zone")}
-        >
-          Zonas
-        </button>
+          <option value="static">Cor Estática</option>
+          <option value="breathing">Respiração (Pulse)</option>
+          <option value="morph">Transição (Morph)</option>
+          <option value="spectrum">Spectrum Cycle</option>
+          <option value="rainbow">Rainbow Wave</option>
+          <option value="zone">Zonas (4 Regiões)</option>
+          <option value="off">Desligado</option>
+        </select>
       </div>
 
-      {(currentMode === "morph" || currentMode === "breathing") && (
+      {(currentMode === "morph" ||
+        currentMode === "breathing" ||
+        currentMode === "spectrum" ||
+        currentMode === "rainbow") && (
         <div className="slider-group">
           <label>
             ⏱️ Velocidade: {duration} ({((duration / 1000) * 100).toFixed(0)}%)

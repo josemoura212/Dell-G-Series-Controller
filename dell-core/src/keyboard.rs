@@ -467,6 +467,105 @@ impl KeyboardController {
         Ok(())
     }
 
+    pub fn set_spectrum(&self, speed: u16) -> Result<()> {
+        self.set_dim(0)?;
+        let _tempo = if speed == 0 { TEMPO_MIN } else { speed };
+        let _duration = DURATION_MAX; // Or maybe use speed as duration? Usually duration is total time, tempo is steps?
+                                      // In apply_morph_action, duration is passed as DURATION to Action.
+                                      // Looking at existing morph: duration is passed to Action.
+
+        // Let offers 3 main colors: Red, Green, Blue
+        let _r = 255;
+        let _g = 0;
+        let _b = 0;
+
+        let build_cycle = |animation: u16| -> Result<()> {
+            self.elc.remove_animation(animation)?;
+            self.elc.start_new_animation(animation)?;
+            self.elc.start_series(&ZONES_ALL, 0)?; // 0 loop count = infinite?
+
+            // Cycle: Red -> Yellow -> Green -> Cyan -> Blue -> Magenta -> Red
+            // Simplification: Red -> Green -> Blue -> Red
+            self.elc.add_action(&[
+                Action::new(MORPH, speed, TEMPO_MIN, 255, 0, 0), // Red
+                Action::new(MORPH, speed, TEMPO_MIN, 0, 255, 0), // Green
+                Action::new(MORPH, speed, TEMPO_MIN, 0, 0, 255), // Blue
+                Action::new(MORPH, speed, TEMPO_MIN, 255, 0, 0), // Red (Loop close)
+            ])?;
+
+            self.elc.finish_save_animation(animation)?;
+            self.elc.set_default_animation(animation)?;
+            Ok(())
+        };
+
+        build_cycle(AC_CHARGED)?;
+        build_cycle(AC_CHARGING)?;
+        build_cycle(DC_ON)?; // Should be dimmer ideally but for now full brightness spectrum
+
+        self.battery_flashing()?;
+        let _ = self.handle.lock().unwrap().reset();
+        Ok(())
+    }
+
+    pub fn set_rainbow(&self, speed: u16) -> Result<()> {
+        self.set_dim(0)?;
+        // Rainbow Wave: Offset colors per zone
+
+        let build_wave = |animation: u16| -> Result<()> {
+            self.elc.remove_animation(animation)?;
+            self.elc.start_new_animation(animation)?;
+
+            // Zone 0: R -> G -> B -> R
+            self.elc.start_series(&[0], 0)?;
+            self.elc.add_action(&[
+                Action::new(MORPH, speed, TEMPO_MIN, 255, 0, 0),
+                Action::new(MORPH, speed, TEMPO_MIN, 0, 255, 0),
+                Action::new(MORPH, speed, TEMPO_MIN, 0, 0, 255),
+                Action::new(MORPH, speed, TEMPO_MIN, 255, 0, 0),
+            ])?;
+
+            // Zone 1: G -> B -> R -> G
+            self.elc.start_series(&[1], 0)?;
+            self.elc.add_action(&[
+                Action::new(MORPH, speed, TEMPO_MIN, 0, 255, 0),
+                Action::new(MORPH, speed, TEMPO_MIN, 0, 0, 255),
+                Action::new(MORPH, speed, TEMPO_MIN, 255, 0, 0),
+                Action::new(MORPH, speed, TEMPO_MIN, 0, 255, 0),
+            ])?;
+
+            // Zone 2: B -> R -> G -> B
+            self.elc.start_series(&[2], 0)?;
+            self.elc.add_action(&[
+                Action::new(MORPH, speed, TEMPO_MIN, 0, 0, 255),
+                Action::new(MORPH, speed, TEMPO_MIN, 255, 0, 0),
+                Action::new(MORPH, speed, TEMPO_MIN, 0, 255, 0),
+                Action::new(MORPH, speed, TEMPO_MIN, 0, 0, 255),
+            ])?;
+
+            // Zone 3: R -> G -> B -> R (or maybe Yellow offset?)
+            // Let's stick to the 3-phase offset for simplicity, maybe Zone 3 mirrors Zone 0
+            self.elc.start_series(&[3], 0)?;
+            self.elc.add_action(&[
+                Action::new(MORPH, speed, TEMPO_MIN, 255, 0, 0),
+                Action::new(MORPH, speed, TEMPO_MIN, 0, 255, 0),
+                Action::new(MORPH, speed, TEMPO_MIN, 0, 0, 255),
+                Action::new(MORPH, speed, TEMPO_MIN, 255, 0, 0),
+            ])?;
+
+            self.elc.finish_save_animation(animation)?;
+            self.elc.set_default_animation(animation)?;
+            Ok(())
+        };
+
+        build_wave(AC_CHARGED)?;
+        build_wave(AC_CHARGING)?;
+        build_wave(DC_ON)?;
+
+        self.battery_flashing()?;
+        let _ = self.handle.lock().unwrap().reset();
+        Ok(())
+    }
+
     pub fn set_dim(&self, level: u8) -> Result<()> {
         self.elc.dim(&ZONES_ALL, level)?;
         Ok(())

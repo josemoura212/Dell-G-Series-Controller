@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -31,7 +31,12 @@ export function PowerControl({
 }: PowerControlProps) {
   const [sensorData, setSensorData] = useState<SensorData | null>(null);
   const [isTurbo, setIsTurbo] = useState(false);
+  const isTurboRef = useRef(isTurbo); // Track state in ref for event listener
   const { settings, updateSetting } = usePersistedSettings();
+
+  useEffect(() => {
+    isTurboRef.current = isTurbo;
+  }, [isTurbo]);
 
   // Use persisted settings or defaults
   const cpuFan = settings?.cpuFan ?? 50;
@@ -65,9 +70,22 @@ export function PowerControl({
     }, 3000);
 
     // Listen for turbo toggle events from backend (Fn+F9)
-    const unlisten = listen("turbo-toggled", () => {
+    const unlisten = listen("turbo-toggled", async () => {
       setIsTurbo((prev) => !prev);
-      // Maybe refresh other states if needed
+      const newStatus = !isTurboRef.current;
+
+      let permissionGranted = await isPermissionGranted();
+      if (!permissionGranted) {
+        const permission = await requestPermission();
+        permissionGranted = permission === "granted";
+      }
+
+      if (permissionGranted) {
+        sendNotification({
+          title: "Modo Turbo",
+          body: newStatus ? "🚀 ATIVADO" : "🛑 DESATIVADO",
+        });
+      }
     });
 
     // Cleanup interval on unmount
