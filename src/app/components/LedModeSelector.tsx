@@ -22,7 +22,7 @@ export function LedModeSelector({
       <div style={{ marginBottom: "16px" }}>
         <select
           value={currentMode}
-          onChange={(e) => onModeChange(e.target.value as any)}
+          onChange={(e) => onModeChange(e.target.value as LedMode)}
           className="dark-select"
         >
           <option value="static">Cor Estática</option>

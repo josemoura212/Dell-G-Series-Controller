@@ -10,6 +10,7 @@ export interface PersistedSettings {
   blue: number;
   duration: number;
   currentLedMode: string;
+  isTurbo?: boolean;
   zone0?: [number, number, number];
   zone1?: [number, number, number];
   zone2?: [number, number, number];
@@ -35,7 +36,7 @@ export function usePersistedSettings() {
       } else {
         // Default settings
         const defaultSettings: PersistedSettings = {
-          currentMode: "balanced",
+          currentMode: "USTT_Balanced",
           selectedPreset: null,
           cpuFan: 50,
           gpuFan: 50,
@@ -44,6 +45,7 @@ export function usePersistedSettings() {
           blue: 0,
           duration: 1000,
           currentLedMode: "static",
+          isTurbo: false,
         };
         setSettings(defaultSettings);
         saveSettings(defaultSettings);
@@ -71,7 +73,7 @@ export function usePersistedSettings() {
   const saveSettings = (newSettings: Partial<PersistedSettings>) => {
     try {
       const currentSettings = settings || {
-        currentMode: "balanced",
+        currentMode: "USTT_Balanced",
         selectedPreset: null,
         cpuFan: 50,
         gpuFan: 50,
@@ -80,6 +82,7 @@ export function usePersistedSettings() {
         blue: 0,
         duration: 1000,
         currentLedMode: "static",
+        isTurbo: false,
       };
       const updatedSettings = { ...currentSettings, ...newSettings };
       localStorage.setItem(SETTINGS_KEY, JSON.stringify(updatedSettings));

@@ -53,26 +53,28 @@ export function PowerControl({
     }
   };
 
+  // Sync turbo state from persisted settings on mount
   useEffect(() => {
     if (!deviceInfo?.power_supported) return;
+    const persistedTurbo =
+      settings?.isTurbo ?? deviceInfo.turbo_enabled ?? false;
+    setIsTurbo(persistedTurbo);
+  }, [deviceInfo?.power_supported, deviceInfo?.turbo_enabled, settings?.isTurbo]);
 
-    // Read sensors immediately when component mounts
+  // Sensor reading interval
+  useEffect(() => {
+    if (!deviceInfo?.power_supported) return;
     readSensors();
+    const interval = setInterval(readSensors, 3000);
+    return () => clearInterval(interval);
+  }, [deviceInfo?.power_supported]);
 
-    // Sync turbo state
-    if (deviceInfo.turbo_enabled !== undefined) {
-      setIsTurbo(deviceInfo.turbo_enabled);
-    }
-
-    // Set up automatic sensor reading every 3 seconds
-    const interval = setInterval(() => {
-      readSensors();
-    }, 3000);
-
-    // Listen for turbo toggle events from backend (Fn+F9)
+  // Listen for turbo toggle events from backend (special key / F9)
+  useEffect(() => {
     const unlisten = listen("turbo-toggled", async () => {
-      setIsTurbo((prev) => !prev);
       const newStatus = !isTurboRef.current;
+      setIsTurbo(newStatus);
+      updateSetting("isTurbo", newStatus);
 
       let permissionGranted = await isPermissionGranted();
       if (!permissionGranted) {
@@ -83,17 +85,15 @@ export function PowerControl({
       if (permissionGranted) {
         sendNotification({
           title: "Modo Turbo",
-          body: newStatus ? "🚀 ATIVADO" : "🛑 DESATIVADO",
+          body: newStatus ? "ATIVADO" : "DESATIVADO",
         });
       }
     });
 
-    // Cleanup interval on unmount
     return () => {
-      clearInterval(interval);
       unlisten.then((f) => f());
     };
-  }, [deviceInfo]);
+  }, [updateSetting]);
 
   const setPowerMode = async (mode: string) => {
     try {
@@ -103,17 +103,29 @@ export function PowerControl({
       if (mode !== "Manual") {
         updateSetting("selectedPreset", null);
       }
+      const wasInTurbo = isTurbo;
       setIsTurbo(false); // Manually setting mode disables turbo
-      showStatus(result);
+      updateSetting("isTurbo", false);
+
+      // Provide better feedback
+      if (wasInTurbo) {
+        showStatus(`${result} (Turbo desativado)`);
+      } else {
+        showStatus(result);
+      }
     } catch (error) {
-      showStatus("Erro: " + String(error), true);
+      const errorMsg = String(error);
+      showStatus("Erro ao definir modo de energia: " + errorMsg, true);
+      console.error("Power mode error:", error);
     }
   };
 
   const toggleTurboPromise = async () => {
     try {
       const result: string = await invoke("toggle_turbo");
-      setIsTurbo((prev) => !prev);
+      const newTurboState = !isTurbo;
+      setIsTurbo(newTurboState);
+      updateSetting("isTurbo", newTurboState);
 
       let permissionGranted = await isPermissionGranted();
       if (!permissionGranted) {
@@ -123,18 +135,23 @@ export function PowerControl({
 
       if (permissionGranted) {
         sendNotification({
-          title: "Modo Turbo",
-          body: result,
+          title: "🎮 Modo Turbo",
+          body: newTurboState
+            ? "🚀 ATIVADO - Ventiladores em 100%"
+            : "🐜 Silencioso - DESATIVADO",
         });
       }
       showStatus(result);
     } catch (error) {
-      showStatus("Erro: " + String(error), true);
+      const errorMsg = String(error);
+      showStatus("Erro ao alternar modo turbo: " + errorMsg, true);
+      console.error("Turbo toggle error:", error);
+
       let permissionGranted = await isPermissionGranted();
       if (permissionGranted) {
         sendNotification({
-          title: "Erro no Modo Turbo",
-          body: String(error),
+          title: "⚠️ Erro no Modo Turbo",
+          body: errorMsg,
         });
       }
     }
@@ -157,13 +174,12 @@ export function PowerControl({
         await new Promise((resolve) => setTimeout(resolve, 300));
       }
 
-      const params = {
-        cpu_rpm: Math.round(cpuFan),
-        gpu_rpm: Math.round(gpuFan),
-      };
-
-      // Try the imported invoke first
-      const result: string = await invoke("set_fan_boost", params);
+      const result: string = await invoke("set_fan_boost", {
+        params: {
+          cpu_rpm: Math.round(cpuFan),
+          gpu_rpm: Math.round(gpuFan),
+        },
+      });
       setIsTurbo(false);
       showStatus(result);
     } catch (error) {
@@ -195,7 +211,7 @@ export function PowerControl({
         <button
           className={`turbo-toggle-btn ${isTurbo ? "active" : ""}`}
           onClick={toggleTurboPromise}
-          title="Alternar Modo Turbo (Fn+F9)"
+          title="Alternar Modo Turbo (Tecla F9 ou Fn+F9)"
         >
           {isTurbo ? "🚀 TURBO ON" : "🚀 TURBO OFF"}
         </button>

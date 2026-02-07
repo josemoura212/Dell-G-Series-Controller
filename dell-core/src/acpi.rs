@@ -3,9 +3,8 @@
 
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
-use std::process::{Command, Stdio};
-use std::io::{BufRead, BufReader, Write};
-use std::sync::Mutex;
+use std::process::Command;
+use log::{debug, info, error};
 
 #[allow(unused)]
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -41,34 +40,27 @@ impl LaptopModel {
     }
 }
 
+const INTEL_ACPI_PATH: &str = "\\_SB.AMWW.WMAX";
+const AMD_ACPI_PATH: &str = "\\_SB.AMW3.WMAX";
+
 pub struct AcpiController {
-    acpi_cmd_template: String,
+    acpi_path: String,
     acpi_call_dict: HashMap<String, Vec<String>>,
     pub power_modes: HashMap<String, String>,
     pub model: LaptopModel,
-    elevated_shell: Mutex<Option<std::process::Child>>,
-    is_root: bool,
 }
 
 impl AcpiController {
     pub fn new() -> Result<Self> {
         let mut controller = Self {
-            acpi_cmd_template: String::new(),
+            acpi_path: INTEL_ACPI_PATH.to_string(),
             acpi_call_dict: HashMap::new(),
             power_modes: Self::default_power_modes(),
             model: LaptopModel::Unknown,
-            elevated_shell: Mutex::new(None),
-            is_root: false,
         };
 
         controller.setup_acpi_calls();
         controller.detect_model()?;
-
-        // Initialize elevated shell immediately like Python does
-        // This will prompt for authorization once when the app starts
-        if let Err(_) = controller.init_elevated_shell() {
-            // Fall back to individual pkexec calls
-        }
 
         Ok(controller)
     }
@@ -140,176 +132,82 @@ impl AcpiController {
         );
     }
 
-    fn init_elevated_shell(&mut self) -> Result<()> {
-        
-        // Create a shell subprocess (root needed for power related functions)
-        match Command::new("bash")
-            .arg("--noprofile")
-            .arg("--norc")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-        {
-            Ok(mut child) => {
-                // Wait for shell prompt
-                std::thread::sleep(std::time::Duration::from_millis(100));
-                
-                // Send initial commands like Python does
-                if let Some(ref mut stdin) = child.stdin {
-                    stdin.write_all(b" export HISTFILE=/dev/null; history -c\n")?;
-                    stdin.flush()?;
-                    
-                    // Elevate privileges (pkexec is needed)
-                    stdin.write_all(b"pkexec bash --noprofile --norc\n")?;
-                    stdin.flush()?;
-                    
-                    // Wait for pkexec to complete
-                    std::thread::sleep(std::time::Duration::from_millis(500));
-                    
-                    // Send more commands
-                    stdin.write_all(b" export HISTFILE=/dev/null; history -c\n")?;
-                    stdin.flush()?;
-                    
-                    // Check if root
-                    stdin.write_all(b"whoami\n")?;
-                    stdin.flush()?;
-                    
-                    // Read response
-                    if let Some(ref mut stdout) = child.stdout {
-                        let mut reader = BufReader::new(stdout);
-                        let mut line = String::new();
-                        
-                        // Read whoami output
-                        if reader.read_line(&mut line).is_ok() {
-                            if line.contains("root") {
-                                self.is_root = true;
-                                
-                                // Store the elevated shell
-                                *self.elevated_shell.lock().unwrap() = Some(child);
-                                return Ok(());
-                            }
-                        }
-                    }
-                }
-                
-                // Fall back to individual pkexec calls
-                self.is_root = false;
-                Ok(())
-            }
-            Err(_) => {
-                // Fall back to individual pkexec calls
-                self.is_root = false;
-                Ok(())
-            }
-        }
+
+    fn set_model(&mut self, model: LaptopModel, is_amd: bool) {
+        self.model = model;
+        self.acpi_path = if is_amd {
+            AMD_ACPI_PATH.to_string()
+        } else {
+            INTEL_ACPI_PATH.to_string()
+        };
+        self.apply_model_patch();
+        info!("Model detected: {} ({})", model.as_str(), if is_amd { "AMD" } else { "Intel" });
     }
 
-
-
     fn detect_model(&mut self) -> Result<()> {
-        // First try DMI detection (works without root) - same as Python version
+        // Try DMI detection first (works without root)
         if let Ok(output) = Command::new("cat")
             .arg("/sys/class/dmi/id/product_name")
             .output()
         {
             let product = String::from_utf8_lossy(&output.stdout).to_lowercase();
-            
-            if product.contains("g15") && product.contains("5530") {
-                self.model = LaptopModel::G15_5530;
-                self.acpi_cmd_template = 
-                    "echo \"\\_SB.AMWW.WMAX 0 {} {{{}, {}, {}, 0x00}}\" | tee /proc/acpi/call; cat /proc/acpi/call"
-                        .to_string();
-                self.apply_model_patch();
-                return Ok(());
-            } else if product.contains("g15") && product.contains("5520") {
-                self.model = LaptopModel::G15_5520;
-                self.acpi_cmd_template = 
-                    "echo \"\\_SB.AMWW.WMAX 0 {} {{{}, {}, {}, 0x00}}\" | tee /proc/acpi/call; cat /proc/acpi/call"
-                        .to_string();
-                self.apply_model_patch();
-                return Ok(());
-            } else if product.contains("g15") && product.contains("5525") {
-                self.model = LaptopModel::G15_5525;
-                self.acpi_cmd_template = 
-                    "echo \"\\_SB.AMW3.WMAX 0 {} {{{}, {}, {}, 0x00}}\" | tee /proc/acpi/call; cat /proc/acpi/call"
-                        .to_string();
-                self.apply_model_patch();
-                return Ok(());
-            } else if product.contains("g15") && product.contains("5515") {
-                self.model = LaptopModel::G15_5515;
-                self.acpi_cmd_template = 
-                    "echo \"\\_SB.AMW3.WMAX 0 {} {{{}, {}, {}, 0x00}}\" | tee /proc/acpi/call; cat /proc/acpi/call"
-                        .to_string();
-                self.apply_model_patch();
-                return Ok(());
-            } else if product.contains("g15") && product.contains("5511") {
-                self.model = LaptopModel::G15_5511;
-                self.acpi_cmd_template = 
-                    "echo \"\\_SB.AMWW.WMAX 0 {} {{{}, {}, {}, 0x00}}\" | tee /proc/acpi/call; cat /proc/acpi/call"
-                        .to_string();
-                self.apply_model_patch();
-                return Ok(());
-            } else if product.contains("g16") && product.contains("7630") {
-                self.model = LaptopModel::G16_7630;
-                self.acpi_cmd_template = 
-                    "echo \"\\_SB.AMWW.WMAX 0 {} {{{}, {}, {}, 0x00}}\" | tee /proc/acpi/call; cat /proc/acpi/call"
-                        .to_string();
-                self.apply_model_patch();
-                return Ok(());
-            } else if product.contains("g16") && product.contains("7620") {
-                self.model = LaptopModel::G16_7620;
-                self.acpi_cmd_template = 
-                    "echo \"\\_SB.AMWW.WMAX 0 {} {{{}, {}, {}, 0x00}}\" | tee /proc/acpi/call; cat /proc/acpi/call"
-                        .to_string();
-                self.apply_model_patch();
+            info!("DMI product name: {}", product.trim());
+
+            let detected = match () {
+                _ if product.contains("g15") && product.contains("5530") => Some((LaptopModel::G15_5530, false)),
+                _ if product.contains("g15") && product.contains("5520") => Some((LaptopModel::G15_5520, false)),
+                _ if product.contains("g15") && product.contains("5525") => Some((LaptopModel::G15_5525, true)),
+                _ if product.contains("g15") && product.contains("5515") => Some((LaptopModel::G15_5515, true)),
+                _ if product.contains("g15") && product.contains("5511") => Some((LaptopModel::G15_5511, false)),
+                _ if product.contains("g16") && product.contains("7630") => Some((LaptopModel::G16_7630, false)),
+                _ if product.contains("g16") && product.contains("7620") => Some((LaptopModel::G16_7620, false)),
+                _ => None,
+            };
+
+            if let Some((model, is_amd)) = detected {
+                self.set_model(model, is_amd);
                 return Ok(());
             }
+
+            if product.contains("g15") || product.contains("g16") {
+                info!("Generic Dell G-series detected, probing ACPI interface...");
+            }
         }
-        
-        self.acpi_cmd_template = 
-            "echo \"\\_SB.AMWW.WMAX 0 {} {{{}, {}, {}, 0x00}}\" | tee /proc/acpi/call; cat /proc/acpi/call"
-                .to_string();
-        
+
+        // Fallback: ACPI probing - try Intel path first
+        self.acpi_path = INTEL_ACPI_PATH.to_string();
         match self.acpi_call("get_laptop_model", None, None) {
             Ok(model_str) => {
                 let model = model_str.trim();
-                self.model = match model {
-                    "0x0" => LaptopModel::G15_5530,
-                    "0x12c0" => LaptopModel::G15_5520,
-                    "0xc80" => LaptopModel::G15_5511,
-                    _ => LaptopModel::Unknown,
-                };
-                
-                if self.model != LaptopModel::Unknown {
-                    self.apply_model_patch();
-                    return Ok(());
+                debug!("ACPI model probe (Intel): {}", model);
+                match model {
+                    "0x0" => { self.set_model(LaptopModel::G15_5530, false); return Ok(()); }
+                    "0x12c0" => { self.set_model(LaptopModel::G15_5520, false); return Ok(()); }
+                    "0xc80" => { self.set_model(LaptopModel::G15_5511, false); return Ok(()); }
+                    _ => {}
                 }
             }
-            Err(_) => {}
+            Err(e) => debug!("Intel ACPI probe failed: {}", e),
         }
-        
-        // Try AMD models
-        self.acpi_cmd_template = 
-            "echo \"\\_SB.AMW3.WMAX 0 {} {{{}, {}, {}, 0x00}}\" | tee /proc/acpi/call; cat /proc/acpi/call"
-                .to_string();
-        
+
+        // Try AMD path
+        self.acpi_path = AMD_ACPI_PATH.to_string();
         match self.acpi_call("get_laptop_model", None, None) {
             Ok(model_str) => {
                 let model = model_str.trim();
-                self.model = match model {
-                    "0x12c0" => LaptopModel::G15_5525,
-                    "0xc80" => LaptopModel::G15_5515,
-                    _ => LaptopModel::Unknown,
-                };
-                
-                if self.model != LaptopModel::Unknown {
-                    self.apply_model_patch();
+                debug!("ACPI model probe (AMD): {}", model);
+                match model {
+                    "0x12c0" => { self.set_model(LaptopModel::G15_5525, true); return Ok(()); }
+                    "0xc80" => { self.set_model(LaptopModel::G15_5515, true); return Ok(()); }
+                    _ => info!("Could not determine specific model, using generic configuration"),
                 }
             }
-            Err(_) => {}
+            Err(e) => {
+                debug!("AMD ACPI probe failed: {}", e);
+                info!("Could not detect model via ACPI, using generic configuration");
+            }
         }
-        
+
         Ok(())
     }
 
@@ -343,22 +241,22 @@ impl AcpiController {
             .get(cmd)
             .ok_or_else(|| anyhow!("Unknown ACPI command: {}", cmd))?;
 
-        // Use the same format as the original Python project
         let cmd_str = match args.len() {
-            4 => format!("echo \"\\_SB.AMWW.WMAX 0 {} {{{}, {}, {}, 0x00}}\" > /proc/acpi/call", args[0], args[1], args[2], args[3]),
+            4 => format!("echo \"{} 0 {} {{{}, {}, {}, 0x00}}\" > /proc/acpi/call", self.acpi_path, args[0], args[1], args[2], args[3]),
             3 => {
-                let arg1 = arg1.unwrap_or("0x00");
-                format!("echo \"\\_SB.AMWW.WMAX 0 {} {{{}, {}, {}, 0x00}}\" > /proc/acpi/call", args[0], args[1], args[2], arg1)
+                let a1 = arg1.unwrap_or("0x00");
+                format!("echo \"{} 0 {} {{{}, {}, {}, 0x00}}\" > /proc/acpi/call", self.acpi_path, args[0], args[1], args[2], a1)
             }
             2 => {
-                let arg1 = arg1.unwrap_or("0x00");
-                let arg2 = arg2.unwrap_or("0x00");
-                format!("echo \"\\_SB.AMWW.WMAX 0 {} {{{}, {}, {}, 0x00}}\" > /proc/acpi/call", args[0], args[1], arg1, arg2)
+                let a1 = arg1.unwrap_or("0x00");
+                let a2 = arg2.unwrap_or("0x00");
+                format!("echo \"{} 0 {} {{{}, {}, {}, 0x00}}\" > /proc/acpi/call", self.acpi_path, args[0], args[1], a1, a2)
             }
             _ => return Err(anyhow!("Invalid ACPI call format")),
         };
 
-        // For now, use individual pkexec calls since the persistent shell has issues
+        debug!("ACPI command [{}]: {}", cmd, cmd_str);
+
         let output = Command::new("pkexec")
             .arg("sh")
             .arg("-c")
@@ -366,30 +264,39 @@ impl AcpiController {
             .output()?;
 
         if !output.status.success() {
-            return Err(anyhow!("ACPI call failed"));
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if stderr.contains("dismissed") || stderr.contains("Not authorized") {
+                error!("Autorizacao cancelada pelo usuario para: {}", cmd);
+                return Err(anyhow!("Autorizacao cancelada. Aceite a janela de autorizacao para continuar."));
+            }
+            error!("ACPI call '{}' failed: {}", cmd, stderr);
+            return Err(anyhow!("Falha no comando ACPI '{}': {}", cmd, stderr));
         }
 
         let result = String::from_utf8_lossy(&output.stdout);
+        debug!("ACPI result [{}]: {}", cmd, result.trim());
 
         let lines: Vec<&str> = result.lines().collect();
-        
-        // Get the last line which contains the result
         if let Some(last_line) = lines.last() {
             let trimmed = last_line.trim().trim_end_matches('%').trim_matches('\'');
             Ok(trimmed.to_string())
         } else {
-            Err(anyhow!("No output from ACPI call"))
+            Err(anyhow!("Sem resposta do comando ACPI '{}'", cmd))
         }
     }
 
     pub fn set_power_mode(&mut self, mode: &str) -> Result<()> {
+        info!("Setting power mode: {} (ACPI path: {})", mode, self.acpi_path);
+
         let mode_value = self
             .power_modes
             .get(mode)
-            .ok_or_else(|| anyhow!("Unknown power mode: {}", mode))?
+            .ok_or_else(|| anyhow!("Modo desconhecido: '{}'. Modos disponiveis: {:?}", mode, self.power_modes.keys().collect::<Vec<_>>()))?
             .clone();
-        
+
+        info!("Power mode '{}' -> ACPI value: {}", mode, mode_value);
         self.acpi_call("set_power_mode", Some(&mode_value), None)?;
+        info!("Power mode '{}' aplicado com sucesso", mode);
         Ok(())
     }
 
@@ -399,9 +306,11 @@ impl AcpiController {
     }
 
     pub fn set_fan_boost(&mut self, fan_id: u8, boost: u8) -> Result<()> {
-        // Use the working command format for G15 5530
-        let cmd = format!("echo \"\\_SB.AMWW.WMAX 0 0x15 {{0x02, 0x{}, 0x{:02X}, 0x00}}\" > /proc/acpi/call", 
-                         if fan_id == 1 { "32" } else { "33" }, boost);
+        let fan_code = if fan_id == 1 { "32" } else { "33" };
+        let cmd = format!("echo \"{} 0 0x15 {{0x02, 0x{}, 0x{:02X}, 0x00}}\" > /proc/acpi/call",
+                         self.acpi_path, fan_code, boost);
+
+        debug!("Setting fan {} boost to {}: {}", fan_id, boost, cmd);
 
         let output = Command::new("pkexec")
             .arg("sh")
@@ -412,7 +321,12 @@ impl AcpiController {
         if output.status.success() {
             Ok(())
         } else {
-            Err(anyhow!("Fan boost command failed"))
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if stderr.contains("dismissed") || stderr.contains("Not authorized") {
+                return Err(anyhow!("Autorizacao cancelada. Aceite a janela de autorizacao."));
+            }
+            error!("Fan boost failed (fan {}): {}", fan_id, stderr);
+            Err(anyhow!("Falha no controle do ventilador {}: {}", fan_id, stderr))
         }
     }
 

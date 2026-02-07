@@ -1,3 +1,5 @@
+mod hotkey_monitor;
+
 use dell_core::{AcpiController, KeyboardController};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -290,17 +292,25 @@ fn set_dim(state: State<AppState>, level: u8) -> Result<String, String> {
 fn set_power_mode(state: State<AppState>, mode: String) -> Result<String, String> {
     let mut acpi = state.acpi.lock().unwrap();
     if let Some(acpi_controller) = acpi.as_mut() {
-        acpi_controller
-            .set_power_mode(&mode)
-            .map_err(|e| e.to_string())?;
-
-        // Reset turbo state if changing modes manually (unless we are just enabling turbo)
-        // But here we are setting a specific mode.
-        state.turbo_enabled.store(false, Ordering::Relaxed);
-
-        Ok(format!("✓ Modo de energia: {}", mode))
+        log::info!("Setting power mode to: {}", mode);
+        
+        match acpi_controller.set_power_mode(&mode) {
+            Ok(_) => {
+                // Reset turbo state if changing modes manually
+                state.turbo_enabled.store(false, Ordering::Relaxed);
+                log::info!("Power mode set successfully to: {}", mode);
+                Ok(format!("✓ Modo de energia: {}", mode))
+            }
+            Err(e) => {
+                let error_msg = format!("Erro ao definir modo de energia: {}", e);
+                log::error!("{}", error_msg);
+                Err(error_msg)
+            }
+        }
     } else {
-        Err("ACPI not available".to_string())
+        let error = "ACPI não disponível. Verifique se o script de configuração foi executado.".to_string();
+        log::error!("{}", error);
+        Err(error)
     }
 }
 
@@ -412,7 +422,18 @@ fn set_turbo_mode(state: State<AppState>, enable: bool) -> Result<String, String
 #[tauri::command]
 fn toggle_turbo(state: State<AppState>) -> Result<String, String> {
     let is_turbo = state.turbo_enabled.load(Ordering::Relaxed);
-    set_turbo_mode(state, !is_turbo)
+    log::info!("Toggling turbo mode. Current state: {}", is_turbo);
+    
+    match set_turbo_mode(state, !is_turbo) {
+        Ok(msg) => {
+            log::info!("Turbo toggled successfully");
+            Ok(msg)
+        }
+        Err(e) => {
+            log::error!("Failed to toggle turbo: {}", e);
+            Err(e)
+        }
+    }
 }
 
 #[tauri::command]
@@ -435,20 +456,64 @@ fn get_sensors(state: State<AppState>) -> Result<SensorData, String> {
     }
 }
 
+fn send_notification(title: &str, body: &str) {
+    match Command::new("notify-send")
+        .arg("--app-name=Dell Controller")
+        .arg(title)
+        .arg(body)
+        .output()
+    {
+        Ok(output) => {
+            if !output.status.success() {
+                log::warn!("notify-send falhou: {}", String::from_utf8_lossy(&output.stderr));
+            }
+        }
+        Err(e) => log::warn!("notify-send não encontrado: {}", e),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    env_logger::init();
+    // Initialize logger with timestamp and module info
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .format_timestamp_millis()
+        .init();
+
+    log::info!("Starting Dell G-Series Controller...");
 
     // Initialize controllers
     let keyboard = Arc::new(Mutex::new(KeyboardController::new(false).ok()));
     let turbo_enabled = Arc::new(AtomicBool::new(false));
 
     // Try to create ACPI controller and log any errors
+    log::info!("Initializing ACPI controller...");
     let acpi_result = AcpiController::new();
     let acpi = Arc::new(Mutex::new(match acpi_result {
-        Ok(controller) => Some(controller),
-        Err(_) => None,
+        Ok(controller) => {
+            log::info!("✓ ACPI controller initialized successfully. Model: {}", controller.model.as_str());
+            Some(controller)
+        }
+        Err(e) => {
+            log::warn!("⚠️ Failed to initialize ACPI controller: {}. Power management will not be available.", e);
+            None
+        }
     }));
+
+    // Initialize hotkey monitor for F9 (works on Wayland and X11)
+    log::info!("Initializing F9 hotkey monitor via evdev...");
+    let hotkey_monitor = match hotkey_monitor::HotkeyMonitor::new(evdev::Key::KEY_F9) {
+        Ok(monitor) => {
+            log::info!("Hotkey monitor ativo - F9 funciona em qualquer tela");
+            Some(monitor)
+        }
+        Err(e) => {
+            log::warn!("Hotkey monitor não disponível: {}. Use o botão na interface.", e);
+            None
+        }
+    };
+
+    let turbo_for_hotkey = turbo_enabled.clone();
+    let acpi_for_hotkey = acpi.clone();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -505,52 +570,55 @@ pub fn run() {
                 }
             }
 
-            // Register global shortcut for turbo mode
-            #[cfg(desktop)]
-            {
-                use tauri_plugin_global_shortcut::{Code, Modifiers, ShortcutState};
+            // Start F9 hotkey polling (evdev - works on Wayland and X11)
+            if let Some(monitor) = hotkey_monitor {
+                let app_handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    loop {
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                        if monitor.try_recv() {
+                            log::info!("F9 detectado via evdev - toggling turbo");
 
-                match tauri_plugin_global_shortcut::Builder::new().with_shortcuts(["f9"]) {
-                    Ok(builder) => {
-                        if let Err(e) = app.handle().plugin(
-                            builder
-                                .with_handler(|app, shortcut, event| {
-                                    if event.state == ShortcutState::Pressed {
-                                        if shortcut.matches(Modifiers::empty(), Code::F9) {
-                                            let app_handle = app.clone();
-                                            tauri::async_runtime::spawn(async move {
-                                                // Call the turbo toggle command
-                                                let state = app_handle.state::<AppState>();
-
-                                                // We need to notify the frontend too, ideally.
-                                                // For now, just perform the action.
-                                                let result = toggle_turbo(state);
-
-                                                // Send notification
-                                                use tauri_plugin_notification::NotificationExt;
-                                                if let Ok(msg) = result {
-                                                    let _ = app_handle
-                                                        .notification()
-                                                        .builder()
-                                                        .title("Dell G-Series Control")
-                                                        .body(&msg)
-                                                        .show();
-                                                    // Emit event to update UI
-                                                    let _ = app_handle.emit("turbo-toggled", ());
-                                                }
-                                            });
-                                        }
+                            let is_turbo = turbo_for_hotkey.load(Ordering::Relaxed);
+                            let mut acpi_guard = acpi_for_hotkey.lock().unwrap();
+                            if let Some(acpi_ctrl) = acpi_guard.as_mut() {
+                                let result = if !is_turbo {
+                                    let _ = acpi_ctrl.set_power_mode("Manual");
+                                    std::thread::sleep(std::time::Duration::from_millis(200));
+                                    let r1 = acpi_ctrl.set_fan_boost(1, 0xFF);
+                                    let r2 = acpi_ctrl.set_fan_boost(2, 0xFF);
+                                    if r1.is_ok() || r2.is_ok() {
+                                        turbo_for_hotkey.store(true, Ordering::Relaxed);
+                                        Ok("MODO TURBO ATIVADO - Ventiladores em 100%".to_string())
+                                    } else {
+                                        Err("Falha ao ativar turbo".to_string())
                                     }
-                                })
-                                .build(),
-                        ) {
-                            eprintln!("Failed to register global shortcuts plugin: {}", e);
+                                } else {
+                                    match acpi_ctrl.set_power_mode("USTT_Quiet") {
+                                        Ok(_) => {
+                                            turbo_for_hotkey.store(false, Ordering::Relaxed);
+                                            Ok("Modo Silencioso (Turbo Desligado)".to_string())
+                                        }
+                                        Err(e) => Err(format!("Erro: {}", e)),
+                                    }
+                                };
+                                drop(acpi_guard);
+
+                                match &result {
+                                    Ok(msg) => {
+                                        log::info!("Turbo toggled via F9: {}", msg);
+                                        send_notification("Dell G-Series - Modo Turbo", msg);
+                                        let _ = app_handle.emit("turbo-toggled", ());
+                                    }
+                                    Err(e) => {
+                                        log::error!("Falha ao toggle turbo: {}", e);
+                                        send_notification("Erro no Modo Turbo", &format!("Erro: {}", e));
+                                    }
+                                }
+                            }
                         }
                     }
-                    Err(e) => {
-                        eprintln!("Failed to configure global shortcuts: {}", e);
-                    }
-                }
+                });
             }
 
             // Create system tray

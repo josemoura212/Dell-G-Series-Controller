@@ -48,7 +48,6 @@
     "updater": {
       "active": false
     },
-    "globalShortcut": {},
     "store": {
       "stores": ["settings.json"]
     }
